@@ -1,5 +1,6 @@
 # --- Dependencies ---
 node_modules/
+.pnpm-store/
 
 # --- Build output (tsc -b emits into lib/; rebuilt on publish) ---
 lib/
@@ -8,10 +9,6 @@ lib/
 # --- Test artifacts ---
 coverage/
 .kiro-management-models-cache.json
-
-# --- Local dev checkout of the harness, sibling of this repo ---
-# tsconfig/vitest resolve the deepseek-harness sources via ../.context/deepseek-harness
-.context/
 
 # --- Logs & OS junk ---
 *.log

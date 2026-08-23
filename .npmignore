@@ -9,7 +9,6 @@ coverage/
 lib/*.map
 *.tsbuildinfo
 .kiro-management-models-cache.json
-.context/
 .npmrc
 tsconfig.json
 tsconfig.build.json

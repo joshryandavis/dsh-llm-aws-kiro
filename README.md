@@ -98,14 +98,15 @@ catalog cache at `~/.kiro-management-models-cache.json` is shared with pi-provid
 
 ```bash
 pnpm install
-pnpm run build       # tsc -b: builds the dependency closure (into the .context checkout) + this package
+pnpm run build       # tsc -b: compiles this package; deps resolve from the published @deepseek-ai packages
 pnpm test            # vitest suite (95 tests): endpoints, store, refresh, models, serialize,
                      # translate, adapter transport, real Loader composition
 ```
 
-Tests resolve the harness packages from the sibling `.context/deepseek-harness` checkout through
-tsconfig paths (see `vitest.config.ts`), so they exercise the exact source APIs. Credential tests
-are fully isolated from the host machine's real kiro-cli / Kiro IDE stores.
+Tests resolve the harness packages from the published `@deepseek-ai/*` packages in `node_modules`
+(peer dependencies plus the dev-dependency set at the versions the code is developed against), so
+they exercise the exact published APIs. Credential tests are fully isolated from the host
+machine's real kiro-cli / Kiro IDE stores.
 
 ## Known limitations and deferred work
 
