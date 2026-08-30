@@ -1,3 +1,5 @@
+English | [中文](README.zh.md)
+
 # dsh-llm-kiro
 
 A Kiro provider for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) LLM seam.
@@ -26,7 +28,7 @@ DSH installation provides them. It also declares the `dsh` bundle manifest
 plain plugin dependency.
 
 ```bash
-npx -y @deepseek-ai/dsh plugin --profile web install @joshryandavis/dsh-llm-kiro
+dsh plugin --profile <profile> add @joshryandavis/dsh-llm-kiro
 ```
 
 Mount it in `cordis.yml`:
