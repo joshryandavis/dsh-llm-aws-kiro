@@ -17,7 +17,8 @@ import { LlmError, resolveRetryPolicy, RetryPolicySchema } from '@deepseek-ai/ds
 import type { LlmDiscoveredModel, ModelModality, RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
-import { deepEqualJson, installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import '@deepseek-ai/dsh-settings'
+import { deepEqualJson } from '@deepseek-ai/dsh-util-values'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import {
   DEFAULT_CONTEXT_WINDOW,
@@ -32,7 +33,7 @@ import { DEFAULT_KIRO_REGION, getKiroRegionFromEndpoint, resolveApiRegion } from
 import { resolveUsableKiroCredential, recoverKiroCredential } from './refresh.ts'
 import type { KiroStorePaths } from './kiro-cli.ts'
 import { fetchKiroModelCatalog } from './management.ts'
-import { bootstrapKiroModels, toHarnessModelId } from './models.ts'
+import { bootstrapKiroModels, isCacheStale, servedKiroModels, toHarnessModelId, updateKiroModelsCache } from './models.ts'
 import type { KiroModel } from './models.ts'
 import type { KiroCredentials } from './types.ts'
 
@@ -51,7 +52,7 @@ export type * from './types.ts'
 export const name = 'llm-kiro'
 export const inject = ['llm']
 
-const NS = settingsNamespace('llm-kiro')
+const NS = 'llm-kiro'
 const MODEL_MODALITIES = ['text', 'image'] as const satisfies readonly ModelModality[]
 
 /** One advisory model entry accepted by configuration. */
@@ -98,7 +99,11 @@ export interface Config {
   maxTokens?: number
   /** Positive context capacity used when the selected model has no exact value (default 200,000). */
   defaultContextWindow?: number
-  /** Advisory models shown by discovery consumers; defaults to the bootstrap catalog. */
+  /**
+   * Explicit model list. When omitted or empty, the bootstrap catalog is
+   * served and the authenticated management catalog refreshes and extends it;
+   * a non-empty list stays authoritative and is served verbatim.
+   */
   models?: KiroModelConfig[]
   /** Maximum provider idle time while one stream read is outstanding (default five minutes). */
   streamIdleTimeoutMs?: number
@@ -134,16 +139,7 @@ export const Config: z<Config> = z.object({
   reasoningEffort: z.union(['off', 'low', 'high', 'max']),
   maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_MAX_TOKENS),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
-  models: z.array(kiroModel).default(bootstrapKiroModels.map(model => ({
-    id: model.id,
-    kiroModelId: model.kiroModelId,
-    name: model.name,
-    reasoning: model.reasoning,
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-    inputModalities: [...model.inputModalities],
-    ...(model.firstTokenTimeoutMs !== undefined ? { firstTokenTimeoutMs: model.firstTokenTimeoutMs } : {}),
-  }))),
+  models: z.array(kiroModel),
   streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   firstTokenTimeoutMs: z.number().min(1).max(MAX_TIMER_DELAY_MS).default(DEFAULT_FIRST_TOKEN_TIMEOUT_MS),
   retryPolicy: RetryPolicySchema,
@@ -152,10 +148,14 @@ export const Config: z<Config> = z.object({
   allowKiroCliRefresh: z.boolean().default(true),
 })
 
-/** Resolve, validate, and detach the advisory model catalog, inheriting bootstrap defaults. */
+/**
+ * Resolve, validate, and detach the configured model catalog, inheriting
+ * bootstrap defaults. An absent list and an empty one are the same thing:
+ * nothing was configured, so the bootstrap catalog is the base.
+ */
 function resolveModels(models: readonly KiroModelConfig[] | undefined): KiroModel[] {
   const seen = new Set<string>()
-  const configured = (models ?? bootstrapKiroModels).map(model => {
+  const configured = (models !== undefined && models.length > 0 ? models : bootstrapKiroModels).map(model => {
     const bootstrap = bootstrapKiroModels.find(entry => entry.id === model.id)
     const wireId = model.kiroModelId
       ?? bootstrap?.kiroModelId
@@ -252,6 +252,9 @@ export function resolveAdapterOptions(config: Config): KiroConnectionOptions {
     ...config.profileArn !== undefined ? { profileArn: config.profileArn } : {},
     ...config.bearerTokenEnv !== undefined ? { bearerTokenEnv: credentialRef(config.bearerTokenEnv) } : {},
     models: resolveModels(config.models),
+    // Schemastery normalises the omitted list to an empty array, so emptiness
+    // is the configured test here as well as in the resolve step.
+    discoverModels: config.models === undefined || config.models.length === 0,
     maxTokens: config.maxTokens ?? DEFAULT_MAX_TOKENS,
     defaultContextWindow: config.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
     thinking: config.thinking ?? 'enabled',
@@ -345,11 +348,38 @@ export function apply(ctx: Context, config: Config): void {
     return recoverKiroCredential(rejected, connection.kiroStorePaths, connection.allowKiroCliRefresh)
   }
 
+  // The authenticated catalog is pulled, never pushed: the harness reads the
+  // model list first and this refresh lands for the next read. The bootstrap
+  // catalog covers the first read, so a slow or unreachable management
+  // endpoint never delays the picker or a request.
+  let catalogWarm: Promise<void> | undefined
+  const warmCatalog = (connection: KiroConnectionOptions): void => {
+    if (catalogWarm !== undefined) return
+    catalogWarm = (async () => {
+      try {
+        const credential = await resolveCredential(connection)
+        const region = resolveApiRegion(credential.region ?? connection.region)
+        if (!isCacheStale(region)) return
+        await updateKiroModelsCache(credential.access, region, credential.profileArn ?? connection.profileArn)
+      } catch (error) {
+        // A missing credential is the normal unconfigured case; anything else
+        // is worth reporting, and both leave the bootstrap catalog in place.
+        if (!(error instanceof LlmError && error.code === 'MISSING_CREDENTIAL')) {
+          ctx.logger.warn('llm-kiro: model catalog refresh failed; serving the bootstrap catalog')
+          ctx.logger.warn(error)
+        }
+      } finally {
+        catalogWarm = undefined
+      }
+    })()
+  }
+
   const adapter = new KiroAdapter({
     options,
     resolveCredential,
     recoverCredential,
     resolveAttachments: () => ctx.get('attachments'),
+    warmCatalog,
   })
   ctx.llm.registerConfigurableProviders([
     { provider: PROVIDER, displayName: 'Kiro', settingsNs: NS, settingsPath: [] },
@@ -367,7 +397,11 @@ export function apply(ctx: Context, config: Config): void {
   // draft naming the kiro route answers from the adapter's own knowledge; a
   // draft with an endpoint and a key interrogates the management API once.
   ctx.llm.registerModelDiscovery(NS, async request => {
-    if (request.provider === PROVIDER) return discoveredFromModels(options().models)
+    if (request.provider === PROVIDER) {
+      const connection = options()
+      warmCatalog(connection)
+      return discoveredFromModels(servedKiroModels(connection))
+    }
     const apiKey = request.apiKey ?? (await resolveCredential(options())).access
     const region = request.baseURL !== undefined
       ? getKiroRegionFromEndpoint(request.baseURL) ?? DEFAULT_KIRO_REGION
@@ -381,10 +415,12 @@ export function apply(ctx: Context, config: Config): void {
     }))
   })
 
-  installSettingsSection(ctx, NS, Config, config, {
-    setSource: (source) => {
-      current = source
-    },
-    onChange: ensureRegistrationFacts,
+  ctx.inject(['settings'], scoped => {
+    scoped.settings.installSection(scoped, NS, Config, config, {
+      setSource: (source) => {
+        current = source
+      },
+      onChange: ensureRegistrationFacts,
+    })
   })
 }

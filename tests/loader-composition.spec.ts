@@ -13,7 +13,6 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import FileSettingsProvider from '@deepseek-ai/dsh-settings-file'
 import LocalCredentialProvider from '@deepseek-ai/dsh-credentials-local'
 import * as LlmKiro from '../src/index.ts'
@@ -21,7 +20,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { assemble } from './assemble.ts'
 import { closeMockServers, mockServer, textEvents } from './mock-server.ts'
 
-const NS = settingsNamespace('llm-kiro')
+const NS = 'llm-kiro'
 
 let root: string | undefined
 let context: Context | undefined

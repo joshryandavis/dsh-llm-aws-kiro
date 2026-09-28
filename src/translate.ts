@@ -6,7 +6,7 @@
  * @module dsh-llm-kiro/translate
  */
 
-import { CallId, EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { KiroStreamEvent } from './types.ts'
 
@@ -29,7 +29,7 @@ function closeBlock(block: OpenBlock): ContentBlock {
     case 'reasoning': return { type: 'reasoning', text: block.text }
     case 'tool-call': return {
       type: 'tool-call',
-      id: CallId(block.callId ?? ''),
+      id: ToolCallId(block.callId ?? ''),
       name: block.name ?? '',
       arguments: block.text,
     }
@@ -140,7 +140,7 @@ export async function* translate(events: AsyncIterable<KiroStreamEvent>, context
           yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
         }
         block.text += tc.input
-        yield { type: 'tool-call-delta', index: block.index, id: CallId(tc.toolUseId), ...(block.name !== undefined ? { name: block.name } : {}), argumentsDelta: tc.input }
+        yield { type: 'tool-call-delta', index: block.index, id: ToolCallId(tc.toolUseId), ...(block.name !== undefined ? { name: block.name } : {}), argumentsDelta: tc.input }
         if (tc.stop) yield* closeTool(block)
         break
       }
@@ -148,7 +148,7 @@ export async function* translate(events: AsyncIterable<KiroStreamEvent>, context
         const block = [...toolBlocks.values()].at(-1)
         if (block) {
           block.text += event.data.input
-          yield { type: 'tool-call-delta', index: block.index, id: CallId(block.callId ?? ''), argumentsDelta: event.data.input }
+          yield { type: 'tool-call-delta', index: block.index, id: ToolCallId(block.callId ?? ''), argumentsDelta: event.data.input }
         }
         break
       }

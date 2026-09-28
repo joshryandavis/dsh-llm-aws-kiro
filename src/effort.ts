@@ -26,6 +26,8 @@ const CLAUDE_MAX_EFFORT_VALUES = ['low', 'medium', 'high', 'max'] as const
 const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 const CLAUDE_EXTENDED_EFFORT_MODELS = new Set([
+  'claude-opus-5.5',
+  'claude-opus-5',
   'claude-opus-4.8',
   'claude-opus-4.7',
   'claude-sonnet-5',
@@ -80,7 +82,7 @@ export function deriveKiroEffort(schema: unknown): KiroEffortConfig | undefined 
  */
 export function fallbackKiroEffort(kiroModelId: string): KiroEffortConfig | undefined {
   const normalizedId = kiroModelId.toLowerCase().replace(/(\d)-(\d)/g, '$1.$2')
-  if (normalizedId.startsWith('openai-gpt')) {
+  if (normalizedId.startsWith('openai-gpt') || normalizedId.startsWith('gpt-')) {
     return { field: 'reasoning', values: GPT_EFFORT_VALUES, summarizedThinking: false }
   }
   if (CLAUDE_EXTENDED_EFFORT_MODELS.has(normalizedId)) {

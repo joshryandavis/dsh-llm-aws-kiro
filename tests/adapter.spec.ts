@@ -327,6 +327,33 @@ describe('llm-kiro adapter stream', () => {
     expect(inst.providerRetryPolicy('kiro')).toEqual({ mode: 'normal', maxRetries: 5 })
   })
 
+  it('refreshes the served catalog from discovery and warms it when the list is read', async () => {
+    const warmCatalog = vi.fn()
+    const inst = adapter({
+      options: () => connection({ region: 'no-such-region', discoverModels: true }),
+      warmCatalog,
+    })
+    const models = await inst.listModels('kiro')
+    expect(warmCatalog).toHaveBeenCalledOnce()
+    expect(warmCatalog).toHaveBeenCalledWith(expect.objectContaining({ region: 'no-such-region' }))
+    // Configured entries keep their positions; discovery refreshes the ids it
+    // knows and appends the models the configured list never had.
+    expect(models.map(model => model.id).slice(0, 2)).toEqual(['claude-sonnet-4-6', 'glm-5'])
+    expect(models.map(model => model.id)).toContain('claude-opus-5-5')
+    expect(await inst.resolveModel('kiro', 'claude-opus-5-5')).toMatchObject({
+      context: { contextWindow: 1000000 },
+      defaultMaxTokens: 128000,
+    })
+    expect(await inst.resolveModel('kiro', 'claude-sonnet-4-6'))
+      .toMatchObject({ context: { contextWindow: 1000000 } })
+    // Without the flag the configured list stays authoritative and nothing warms.
+    const explicit = adapter()
+    const explicitModels = await explicit.listModels('kiro')
+    expect(explicitModels.map(model => model.id)).toEqual(['claude-sonnet-4-6', 'glm-5'])
+    expect(await explicit.resolveModel('kiro', 'claude-sonnet-4-6'))
+      .toMatchObject({ context: { contextWindow: 200000 } })
+  })
+
   it('fails loud for an unknown model id on the wire', async () => {
     await expect(collect(adapter().stream(request({ model: 'totally-unknown' }))))
       .rejects.toMatchObject({ code: 'INVALID_REQUEST' })

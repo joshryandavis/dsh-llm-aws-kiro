@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   KiroManagementHttpError,
   listAvailableModels,
+  parseManagementCache,
   resetKiroProfileArnCache,
   resolveKiroProfileArn,
   fetchKiroModelCatalog,
@@ -96,5 +97,49 @@ describe('llm-kiro management', () => {
     resetKiroProfileArnCache()
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('ECONNREFUSED') }))
     await expect(resolveKiroProfileArn(auth)).rejects.toThrow('ListAvailableProfiles request failed')
+  })
+
+  it('normalises a shared version-1 cache document onto the raw catalog shape', () => {
+    const cache = parseManagementCache(JSON.stringify({
+      version: 1,
+      source: 'kiro-management',
+      regions: {
+        'eu-central-1': {
+          region: 'eu-central-1',
+          fetchedAt: 1,
+          models: [{
+            id: 'claude-opus-5-5',
+            kiroModelId: 'claude-opus-5.5',
+            name: 'Claude Opus 5.5',
+            contextWindow: 1000000,
+            maxTokens: 128000,
+          }],
+        },
+      },
+    }))
+    expect(cache?.version).toBe(2)
+    expect(cache?.regions['eu-central-1']?.models[0]).toEqual({
+      modelId: 'claude-opus-5.5',
+      displayName: 'Claude Opus 5.5',
+      tokenLimits: { maxInputTokens: 1000000, maxOutputTokens: 128000 },
+    })
+  })
+
+  it('rejects unreadable cache versions and records without a model id', () => {
+    expect(parseManagementCache(JSON.stringify({
+      version: 9,
+      source: 'kiro-management',
+      regions: {},
+    }))).toBeUndefined()
+    expect(parseManagementCache(JSON.stringify({
+      version: 1,
+      source: 'kiro-management',
+      regions: { r: { region: 'r', fetchedAt: 1, models: [{ name: 'no id' }] } },
+    }))).toBeUndefined()
+    expect(parseManagementCache(JSON.stringify({
+      version: 2,
+      source: 'other-tool',
+      regions: {},
+    }))).toBeUndefined()
   })
 })

@@ -27,10 +27,18 @@ const MANAGEMENT_TIMEOUT_MS = 20_000
 export function getKiroManagementCachePath(): string {
   return join(homedir(), '.kiro-management-models-cache.json')
 }
-/** Cache format version; bumped when the cached model shape changes. */
+/** Cache format version this provider writes; bumped when the cached model shape changes. */
 export const KIRO_MANAGEMENT_CACHE_VERSION = 2
 /** Cache source tag validating a cache file belongs to this provider family. */
 export const KIRO_MANAGEMENT_CACHE_SOURCE = 'kiro-management'
+/**
+ * Cache format versions this provider can read. Version 2 stores the raw
+ * List-Available-Models records this provider maps; version 1 is
+ * pi-provider-kiro's enriched layout, accepted so the shared catalog stays
+ * useful whichever tool refreshed it last. Writes always stamp the current
+ * version.
+ */
+const READABLE_CACHE_VERSIONS = new Set<number>([1, KIRO_MANAGEMENT_CACHE_VERSION])
 
 /** Cache TTL before the catalog is re-fetched. */
 const CACHE_MAX_AGE_MS = 3600_000
@@ -234,14 +242,44 @@ function isPositiveNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
 
-/** Validate one cached region entry. */
-function isCachedRegion(value: unknown): value is ManagementCacheRegion {
-  if (!isRecord(value) || typeof value.region !== 'string' || !isPositiveNumber(value.fetchedAt)) return false
-  if (!Array.isArray(value.models) || value.models.length === 0) return false
-  return value.models.every(model => isRecord(model) && typeof model.modelId === 'string')
+/**
+ * Normalise one cached catalog record to the raw List-Available-Models shape
+ * this provider maps. A version-2 record already is raw; a version-1
+ * (pi-provider-kiro) record is keyed by `kiroModelId` and carries its
+ * capacities as `contextWindow`/`maxTokens`, so those are lifted back onto
+ * the raw field names.
+ * @param value - one cached model record.
+ * @returns the raw-shaped record, or undefined when it discloses no model id.
+ */
+function normaliseCachedModel(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined
+  if (typeof value.modelId === 'string' && value.modelId.length > 0) return value
+  const kiroModelId = value.kiroModelId
+  if (typeof kiroModelId !== 'string' || kiroModelId.length === 0) return undefined
+  const tokenLimits = isRecord(value.tokenLimits)
+    ? value.tokenLimits
+    : isPositiveNumber(value.contextWindow) || isPositiveNumber(value.maxTokens)
+      ? {
+          ...(isPositiveNumber(value.contextWindow) ? { maxInputTokens: value.contextWindow } : {}),
+          ...(isPositiveNumber(value.maxTokens) ? { maxOutputTokens: value.maxTokens } : {}),
+        }
+      : undefined
+  return {
+    modelId: kiroModelId,
+    ...(typeof value.name === 'string' && value.name.length > 0 ? { displayName: value.name } : {}),
+    ...(tokenLimits !== undefined ? { tokenLimits } : {}),
+    ...(value.additionalModelRequestFieldsSchema !== undefined
+      ? { additionalModelRequestFieldsSchema: value.additionalModelRequestFieldsSchema }
+      : {}),
+  }
 }
 
-/** Parse and validate the on-disk cache document. */
+/**
+ * Parse and validate the on-disk cache document, accepting every readable
+ * version and normalising its records to the raw catalog shape.
+ * @param raw - the cache file contents.
+ * @returns the normalised cache document, or undefined when unusable.
+ */
 export function parseManagementCache(raw: string): ManagementModelsCache | undefined {
   let value: unknown
   try {
@@ -251,7 +289,8 @@ export function parseManagementCache(raw: string): ManagementModelsCache | undef
   }
   if (
     !isRecord(value)
-    || value.version !== KIRO_MANAGEMENT_CACHE_VERSION
+    || typeof value.version !== 'number'
+    || !READABLE_CACHE_VERSIONS.has(value.version)
     || value.source !== KIRO_MANAGEMENT_CACHE_SOURCE
     || !isRecord(value.regions)
   ) {
@@ -259,13 +298,26 @@ export function parseManagementCache(raw: string): ManagementModelsCache | undef
   }
   const regions: Record<string, ManagementCacheRegion> = {}
   for (const [region, rawEntry] of Object.entries(value.regions)) {
-    if (!isCachedRegion(rawEntry) || rawEntry.region !== region) return undefined
-    const modelIds = new Set<string>()
-    for (const model of rawEntry.models) {
-      if (typeof model.modelId !== 'string' || modelIds.has(model.modelId)) return undefined
-      modelIds.add(model.modelId)
+    if (
+      !isRecord(rawEntry)
+      || rawEntry.region !== region
+      || !isPositiveNumber(rawEntry.fetchedAt)
+      || !Array.isArray(rawEntry.models)
+      || rawEntry.models.length === 0
+    ) {
+      return undefined
     }
-    regions[region] = rawEntry
+    const models: Array<Record<string, unknown>> = []
+    const modelIds = new Set<string>()
+    for (const rawModel of rawEntry.models) {
+      const model = normaliseCachedModel(rawModel)
+      if (model === undefined || typeof model.modelId !== 'string' || modelIds.has(model.modelId)) {
+        return undefined
+      }
+      modelIds.add(model.modelId)
+      models.push(model)
+    }
+    regions[region] = { region, fetchedAt: rawEntry.fetchedAt, models }
   }
   return { version: KIRO_MANAGEMENT_CACHE_VERSION, source: KIRO_MANAGEMENT_CACHE_SOURCE, regions }
 }

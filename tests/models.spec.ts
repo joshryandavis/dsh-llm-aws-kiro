@@ -21,10 +21,13 @@ import {
   isCacheStale,
   KIRO_MODEL_IDS,
   mapKiroCatalogModels,
+  mergeKiroModels,
   resolveKiroModelId,
+  servedKiroModels,
   toHarnessModelId,
   updateKiroModelsCache,
 } from '../src/models.ts'
+import type { KiroModel } from '../src/models.ts'
 import { readManagementCache } from '../src/management.ts'
 import type { KiroCatalogModel } from '../src/types.ts'
 
@@ -144,5 +147,96 @@ describe('llm-kiro models', () => {
     const { writeFileSync } = await import('node:fs')
     writeFileSync(join(home!, '.kiro-management-models-cache.json'), 'not json')
     expect(getCachedModels('ap-southeast-1')).toEqual(bootstrapKiroModels)
+  })
+
+  it('ships the newest authenticated models in the bootstrap catalog', () => {
+    expect(bootstrapKiroModels.find(model => model.id === 'claude-opus-5-5')).toMatchObject({
+      kiroModelId: 'claude-opus-5.5',
+      contextWindow: 1000000,
+      maxTokens: 128000,
+      reasoning: true,
+      inputModalities: ['text', 'image'],
+    })
+    expect(bootstrapKiroModels.find(model => model.id === 'claude-opus-5')).toMatchObject({
+      kiroModelId: 'claude-opus-5',
+      maxTokens: 128000,
+    })
+    expect(bootstrapKiroModels.find(model => model.id === 'claude-opus-4-5')).toMatchObject({
+      kiroModelId: 'claude-opus-4.5',
+      contextWindow: 200000,
+    })
+    expect(bootstrapKiroModels.find(model => model.id === 'gpt-5-6-sol')).toMatchObject({
+      kiroModelId: 'gpt-5.6-sol',
+      contextWindow: 1000000,
+      maxTokens: 128000,
+      inputModalities: ['text'],
+    })
+    expect(resolveKiroModelId('claude-opus-5-5')).toBe('claude-opus-5.5')
+  })
+
+  it('merges discovered metadata over the matched id and appends new ids', () => {
+    const discovered: KiroModel[] = [
+      { id: 'claude-opus-5-5', kiroModelId: 'claude-opus-5.5', name: 'Claude Opus 5.5 (live)', reasoning: true, contextWindow: 123, maxTokens: 45, inputModalities: ['text', 'image'] },
+      { id: 'brand-new-model', kiroModelId: 'brand-new-model', name: 'Brand New', reasoning: false, contextWindow: 777, maxTokens: 77, inputModalities: ['text'] },
+    ]
+    const merged = mergeKiroModels(bootstrapKiroModels, discovered)
+    expect(merged).toHaveLength(bootstrapKiroModels.length + 1)
+    expect(merged.find(model => model.id === 'claude-opus-5-5')).toMatchObject({
+      name: 'Claude Opus 5.5 (live)',
+      contextWindow: 123,
+      maxTokens: 45,
+    })
+    expect(merged[merged.length - 1]?.id).toBe('brand-new-model')
+  })
+
+  it('serves an explicit list verbatim and extends it only when discovery is on', () => {
+    const explicit: KiroModel[] = [
+      { id: 'only-me', kiroModelId: 'only-me', name: 'Only Me', reasoning: false, contextWindow: 1, maxTokens: 1, inputModalities: ['text'] },
+    ]
+    expect(servedKiroModels({ models: explicit })).toEqual(explicit)
+    expect(servedKiroModels({ models: explicit, discoverModels: true, region: 'ap-southeast-1' }))
+      .toEqual(mergeKiroModels(explicit, bootstrapKiroModels))
+  })
+
+  it('reads a shared pi-provider-kiro version-1 cache document', async () => {
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(join(home!, '.kiro-management-models-cache.json'), JSON.stringify({
+      version: 1,
+      source: 'kiro-management',
+      regions: {
+        'ap-southeast-2': {
+          region: 'ap-southeast-2',
+          fetchedAt: Date.now(),
+          models: [
+            {
+              id: 'claude-opus-5-5',
+              kiroModelId: 'claude-opus-5.5',
+              name: 'Claude Opus 5.5',
+              contextWindow: 1000000,
+              maxTokens: 128000,
+              additionalModelRequestFieldsSchema: {
+                properties: { output_config: { properties: { effort: { enum: ['low', 'high'] } } } },
+              },
+            },
+            { id: 'brand-new-model', kiroModelId: 'brand-new-model', name: 'Brand New', contextWindow: 777, maxTokens: 77 },
+          ],
+        },
+      },
+    }))
+    const cached = getCachedModels('ap-southeast-2')
+    expect(cached.find(model => model.id === 'claude-opus-5-5')).toMatchObject({
+      name: 'Claude Opus 5.5',
+      contextWindow: 1000000,
+      maxTokens: 128000,
+      reasoning: true,
+    })
+    expect(cached.find(model => model.id === 'brand-new-model')).toMatchObject({
+      contextWindow: 777,
+      maxTokens: 77,
+      reasoning: false,
+    })
+    expect(isCacheStale('ap-southeast-2')).toBe(false)
+    expect(resolveKiroModelId('brand-new-model')).toBe('brand-new-model')
+    expect(KIRO_MODEL_IDS.has('brand-new-model')).toBe(true)
   })
 })

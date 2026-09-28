@@ -28,7 +28,7 @@ import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { getKiroEndpoints, resolveApiRegion } from './endpoints.ts'
 import { buildKiroAdditionalModelRequestFields } from './effort.ts'
-import { kiroEffortFor, getCachedModels, resolveKiroModelId } from './models.ts'
+import { kiroEffortFor, resolveKiroModelId, servedKiroModels } from './models.ts'
 import type { KiroModel } from './models.ts'
 import { resolveKiroProfileArn, KiroManagementHttpError } from './management.ts'
 import { serializeKiroRequest, type EncodedKiroImage } from './serialize.ts'
@@ -82,8 +82,14 @@ export interface KiroConnectionOptions {
    * referenced secret authenticates every request.
    */
   bearerTokenEnv?: CredentialRef
-  /** Advisory models exposed to discovery consumers. */
+  /** Configured models, or the bootstrap catalog when nothing was configured. */
   models: readonly KiroModel[]
+  /**
+   * Whether the authenticated catalog may refresh and extend {@link models}.
+   * The plugin sets this when the user configured no explicit model list; an
+   * explicit list stays authoritative and is served verbatim.
+   */
+  discoverModels?: boolean
   /** Positive context capacity used when the selected model has no exact value. */
   defaultContextWindow: number
   /** Default per-request output cap; explicit request values win. */
@@ -126,6 +132,12 @@ export interface KiroAdapterOptions {
   ) => Promise<KiroCredentials | undefined>
   /** Resolve the current durable attachment service; absence rejects image input. */
   resolveAttachments?: () => AttachmentStore | undefined
+  /**
+   * Kick a background refresh of the shared authenticated catalog. Called when
+   * the harness reads the model list; the plugin coalesces concurrent calls
+   * and swallows failures so a provider outage never breaks the picker.
+   */
+  warmCatalog?: (connection: KiroConnectionOptions) => void
 }
 
 /** The Kiro provider route name. */
@@ -151,8 +163,8 @@ function modelInfo(provider: string, model: KiroModel): LlmModelInfo {
 }
 
 /** The model metadata for one exact model id: catalog entry or undefined. */
-function catalogEntry(connection: KiroConnectionOptions, model: string): KiroModel | undefined {
-  return connection.models.find(entry => entry.id === model)
+function catalogEntry(models: readonly KiroModel[], model: string): KiroModel | undefined {
+  return models.find(entry => entry.id === model)
 }
 
 /**
@@ -174,10 +186,10 @@ export class KiroAdapter extends LlmAdapter {
 
   override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const connection = this.config.options()
-    const models = connection.models.length > 0
-      ? connection.models
-      : getCachedModels(resolveApiRegion(connection.region))
-    return Promise.resolve(models.map(model => modelInfo(provider, model)))
+    // Reading the list is the natural pull point for the catalog: serve the
+    // cache immediately and refresh it in the background for the next read.
+    this.config.warmCatalog?.(connection)
+    return Promise.resolve(servedKiroModels(connection).map(model => modelInfo(provider, model)))
   }
 
   override resolveModel(
@@ -186,7 +198,7 @@ export class KiroAdapter extends LlmAdapter {
     _signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
     const connection = this.config.options()
-    const configured = catalogEntry(connection, model)
+    const configured = catalogEntry(servedKiroModels(connection), model)
     const contextWindow = configured?.contextWindow ?? connection.defaultContextWindow
     const reasoningOff = connection.thinking === 'disabled'
     const defaultEffort = reasoningOff || connection.reasoningEffort === 'off'
@@ -213,7 +225,7 @@ export class KiroAdapter extends LlmAdapter {
     const hasImages = options.messages.some(message => contentHasImage(message.content))
     let attachments: AttachmentStore | undefined
     if (hasImages) {
-      const model = catalogEntry(connection, options.model)
+      const model = catalogEntry(servedKiroModels(connection), options.model)
       if (model?.inputModalities?.includes('image') !== true) {
         throw new LlmError(
           `Kiro model "${options.model}" does not accept image input.`,
@@ -295,7 +307,7 @@ export class KiroAdapter extends LlmAdapter {
     } catch (error) {
       throw new LlmError(`llm-kiro: ${(error as Error).message}`, 'INVALID_REQUEST', { cause: error })
     }
-    const model = catalogEntry(connection, options.model)
+    const model = catalogEntry(servedKiroModels(connection), options.model)
     const contextWindow = model?.contextWindow ?? connection.defaultContextWindow
     const effortConfig = kiroEffortFor(wireModelId, model?.additionalModelRequestFieldsSchema)
     const effectiveEffort = options.reasoningEffort === undefined

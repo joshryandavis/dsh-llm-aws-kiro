@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createAssistantMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
 import {
   EMPTY_CONTENT_PLACEHOLDER,
@@ -29,7 +29,7 @@ function assistant(text: string, toolCall?: { id: string; name: string; argument
       ...(text ? [{ type: 'text' as const, text }] : []),
       ...(toolCall ? [{
         type: 'tool-call' as const,
-        id: CallId(toolCall.id),
+        id: ToolCallId(toolCall.id),
         name: toolCall.name,
         arguments: toolCall.arguments,
       }] : []),
@@ -40,7 +40,7 @@ function assistant(text: string, toolCall?: { id: string; name: string; argument
 
 function toolResult(callId: string, text: string, isError = false): Message {
   return createToolResultMessage({
-    callId: CallId(callId),
+    callId: ToolCallId(callId),
     content: [{ type: 'text', text }],
     isError,
   }) as unknown as Message

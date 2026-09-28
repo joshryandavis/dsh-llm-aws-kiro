@@ -3,12 +3,15 @@
  * kiro-cli-verified menu), the authenticated management catalog, and the
  * id/capacity/reasoning metadata the harness resolves per exact model. The
  * management cache file is shared with pi-provider-kiro so both tools see one
- * catalog.
+ * catalog; {@link servedKiroModels} is the one place that decides what the
+ * harness is offered, so discovery reaches both the model picker and the
+ * Models page.
  * @module dsh-llm-kiro/models
  */
 
 import type { ModelModality } from '@deepseek-ai/dsh-llm'
 import { getKiroEffortConfig, type KiroEffortConfig } from './effort.ts'
+import { resolveApiRegion } from './endpoints.ts'
 import {
   fetchKiroModelCatalog,
   isCacheStale as isCacheStaleEntry,
@@ -49,23 +52,34 @@ export const DEFAULT_MAX_TOKENS = 8_192
 
 const ZERO_CONTEXT_WINDOW = 1_000_000
 
-/** The bootstrap catalog, mirroring the kiro-cli-verified model menu. */
+/**
+ * The bootstrap catalog, mirroring the kiro-cli-verified model menu. It is the
+ * pre-discovery fallback and the curated menu order; the authenticated
+ * management catalog refreshes its metadata and appends models it has not
+ * learned yet (see {@link servedKiroModels}).
+ */
 const BOOTSTRAP: Array<Omit<KiroModel, 'kiroModelId' | 'inputModalities'> & { inputModalities?: readonly ModelModality[]; kiroModelId: string }> = [
+  { id: 'claude-opus-5-5', kiroModelId: 'claude-opus-5.5', name: 'Claude Opus 5.5', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 128000, firstTokenTimeoutMs: 180_000 },
+  { id: 'claude-opus-5', kiroModelId: 'claude-opus-5', name: 'Claude Opus 5', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 128000, firstTokenTimeoutMs: 180_000 },
   { id: 'claude-opus-4-8', kiroModelId: 'claude-opus-4.8', name: 'Claude Opus 4.8', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 128000, firstTokenTimeoutMs: 180_000 },
   { id: 'claude-opus-4-7', kiroModelId: 'claude-opus-4.7', name: 'Claude Opus 4.7', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 128000, firstTokenTimeoutMs: 180_000 },
-  { id: 'claude-opus-4-6', kiroModelId: 'claude-opus-4.6', name: 'Claude Opus 4.6', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 32768 },
-  { id: 'claude-sonnet-5', kiroModelId: 'claude-sonnet-5', name: 'Claude Sonnet 5', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 65536 },
-  { id: 'claude-sonnet-4-6', kiroModelId: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 65536 },
-  { id: 'claude-sonnet-4-5', kiroModelId: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', reasoning: true, contextWindow: 200000, maxTokens: 65536 },
-  { id: 'claude-sonnet-4', kiroModelId: 'claude-sonnet-4', name: 'Claude Sonnet 4', reasoning: true, contextWindow: 200000, maxTokens: 65536 },
-  { id: 'claude-haiku-4-5', kiroModelId: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', reasoning: false, contextWindow: 200000, maxTokens: 65536 },
-  { id: 'claude-fable-5', kiroModelId: 'claude-fable-5', name: 'Claude Fable 5', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 65536 },
+  { id: 'claude-opus-4-6', kiroModelId: 'claude-opus-4.6', name: 'Claude Opus 4.6', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 64000 },
+  { id: 'claude-opus-4-5', kiroModelId: 'claude-opus-4.5', name: 'Claude Opus 4.5', reasoning: true, contextWindow: 200000, maxTokens: 64000 },
+  { id: 'claude-sonnet-5', kiroModelId: 'claude-sonnet-5', name: 'Claude Sonnet 5', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 64000 },
+  { id: 'claude-sonnet-4-6', kiroModelId: 'claude-sonnet-4.6', name: 'Claude Sonnet 4.6', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 64000 },
+  { id: 'claude-sonnet-4-5', kiroModelId: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5', reasoning: true, contextWindow: 200000, maxTokens: 64000 },
+  { id: 'claude-sonnet-4', kiroModelId: 'claude-sonnet-4', name: 'Claude Sonnet 4', reasoning: true, contextWindow: 200000, maxTokens: 64000 },
+  { id: 'claude-haiku-4-5', kiroModelId: 'claude-haiku-4.5', name: 'Claude Haiku 4.5', reasoning: false, contextWindow: 200000, maxTokens: 64000 },
+  { id: 'claude-fable-5', kiroModelId: 'claude-fable-5', name: 'Claude Fable 5', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 64000 },
+  { id: 'gpt-5-6-sol', kiroModelId: 'gpt-5.6-sol', name: 'GPT 5.6 Sol', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 128000 },
+  { id: 'gpt-5-6-terra', kiroModelId: 'gpt-5.6-terra', name: 'GPT 5.6 Terra', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 128000 },
+  { id: 'gpt-5-6-luna', kiroModelId: 'gpt-5.6-luna', name: 'GPT 5.6 Luna', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 128000 },
   { id: 'deepseek-3-2', kiroModelId: 'deepseek-3.2', name: 'DeepSeek 3.2', reasoning: true, contextWindow: 164000, maxTokens: 8192 },
-  { id: 'minimax-m2-5', kiroModelId: 'minimax-m2.5', name: 'MiniMax M2.5', reasoning: false, contextWindow: 196000, maxTokens: 8192 },
-  { id: 'minimax-m2-1', kiroModelId: 'minimax-m2.1', name: 'MiniMax M2.1', reasoning: false, contextWindow: 196000, maxTokens: 8192 },
+  { id: 'minimax-m2-5', kiroModelId: 'minimax-m2.5', name: 'MiniMax M2.5', reasoning: false, contextWindow: 196000, maxTokens: 64000 },
+  { id: 'minimax-m2-1', kiroModelId: 'minimax-m2.1', name: 'MiniMax M2.1', reasoning: false, contextWindow: 196000, maxTokens: 64000 },
   { id: 'glm-5', kiroModelId: 'glm-5', name: 'GLM 5', reasoning: true, contextWindow: 200000, maxTokens: 8192 },
-  { id: 'qwen3-coder-next', kiroModelId: 'qwen3-coder-next', name: 'Qwen3 Coder Next', reasoning: true, contextWindow: 256000, maxTokens: 8192 },
-  { id: 'auto', kiroModelId: 'auto', name: 'Auto', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 65536 },
+  { id: 'qwen3-coder-next', kiroModelId: 'qwen3-coder-next', name: 'Qwen3 Coder Next', reasoning: true, contextWindow: 256000, maxTokens: 64000 },
+  { id: 'auto', kiroModelId: 'auto', name: 'Auto', reasoning: true, contextWindow: ZERO_CONTEXT_WINDOW, maxTokens: 64000 },
 ]
 
 /** The shipped bootstrap catalog, with modalities filled in. */
@@ -191,6 +205,48 @@ export function getCachedModels(region: string): KiroModel[] {
   if (!entry) return [...bootstrapKiroModels]
   const mapped = mapKiroCatalogModels(entry.models as unknown as KiroCatalogModel[], region)
   return mapped.length > 0 ? mapped : [...bootstrapKiroModels]
+}
+
+/**
+ * Merge the authenticated catalog over the configured or bootstrap list. A
+ * discovered entry replaces the metadata of the same harness id but keeps the
+ * base list's position, and an id the base list has never seen is appended, so
+ * the curated menu order survives while discovery refreshes capacities, effort
+ * schemas, and newly launched models.
+ * @param base - the configured or bootstrap catalog.
+ * @param discovered - the catalog mapped from the authenticated management cache.
+ * @returns the merged catalog.
+ */
+export function mergeKiroModels(base: readonly KiroModel[], discovered: readonly KiroModel[]): KiroModel[] {
+  const discoveredById = new Map(discovered.map(model => [model.id, model]))
+  const merged = base.map(model => discoveredById.get(model.id) ?? model)
+  const knownIds = new Set(base.map(model => model.id))
+  for (const model of discovered) {
+    if (!knownIds.has(model.id)) merged.push(model)
+  }
+  return merged
+}
+
+/** The discovery policy and catalog one connection resolves its models from. */
+export interface KiroModelSource {
+  /** The configured catalog, or the bootstrap catalog when nothing was configured. */
+  models: readonly KiroModel[]
+  /** Whether the authenticated catalog may refresh and extend the list. */
+  discoverModels?: boolean
+  /** SSO or Kiro API region used to pick the cached catalog. */
+  region?: string
+}
+
+/**
+ * The catalog one connection serves. An explicit model list is authoritative;
+ * otherwise the cached authenticated catalog refreshes the bootstrap entries
+ * and appends the models discovery has found since they shipped.
+ * @param source - the connection's catalog facts.
+ * @returns the harness model list for this connection.
+ */
+export function servedKiroModels(source: KiroModelSource): readonly KiroModel[] {
+  if (source.discoverModels !== true) return source.models
+  return mergeKiroModels(source.models, getCachedModels(resolveApiRegion(source.region)))
 }
 
 /**

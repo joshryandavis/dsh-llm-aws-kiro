@@ -20,8 +20,9 @@
   `List-Available-Models`、共享的 `~/.kiro-management-models-cache.json` 目录缓存），以及通过 AWS
   event-stream 协议（经 `@smithy/core` 的 Smithy 组帧）发起的运行时 `generateAssistantResponse` 调用，
   带容量退避、首 token 超时和 harness 空闲看门狗。 |
-| **模型** | 一份镜像 kiro-cli 已验证菜单的引导目录（15 个模型，含上下文窗口、输出上限、推理能力、图像模态），
-  精确的线上 id 解析（带连字符的 harness id ⇄ 带点的线上 id），以及面向 Models 页面的管理发现。
+| **模型** | 一份镜像 kiro-cli 已验证菜单的引导目录（21 个模型，含上下文窗口、输出上限、推理能力、图像模态），
+  精确的线上 id 解析（带连字符的 harness id ⇄ 带点的线上 id），以及经过认证的管理目录：它会刷新所服务的元数据，
+  并追加引导清单发布之后才上线的模型——不仅作用于 Models 页面，也直接作用于模型选择器。
   推理强度把 harness 的 `off`/`low`/`high`/`max` 词汇映射到每个模型各自认证的 effort schema，
   并在系统提示上带上 Kiro 的思考标记。 |
 
@@ -71,7 +72,7 @@ dsh plugin --profile <profile> add @joshryandavis/dsh-llm-kiro
 | `reasoningEffort` | `high` | 默认推理强度；`off` 禁用思考。 |
 | `maxTokens` | `8192` | 默认的每请求输出上限；按模型的上限和显式值优先。 |
 | `defaultContextWindow` | `200000` | 没有精确值时的上下文容量。 |
-| `models` | 引导目录 | 展示给发现使用方的参考模型列表。 |
+| `models` | 引导目录 + 认证发现 | 显式模型列表；非空时原样提供并关闭发现。 |
 | `streamIdleTimeoutMs` | `300000` | 每次读取的空闲预算。 |
 | `firstTokenTimeoutMs` | `90000` | 首事件预算；慢模型另有按模型覆盖。 |
 | `retryPolicy` | normal，五次重试 | 提供给 `dsh-llm-retry` 的提供方自有重试策略。 |
@@ -85,27 +86,35 @@ dsh plugin --profile <profile> add @joshryandavis/dsh-llm-kiro
 
 | Harness id | 线上 id | 上下文 | 推理 | 图像 |
 | --- | --- | --- | --- | --- |
+| `claude-opus-5-5` / `claude-opus-5` | `claude-opus-5.5` / `claude-opus-5` | 1M | ✓ | ✓ |
 | `claude-opus-4-8` / `claude-opus-4-7` | `claude-opus-4.8` / `claude-opus-4.7` | 1M | ✓ | ✓ |
-| `claude-opus-4-6` | `claude-opus-4.6` | 1M | ✓ | ✓ |
+| `claude-opus-4-6` / `claude-opus-4-5` | `claude-opus-4.6` / `claude-opus-4.5` | 1M / 200K | ✓ | ✓ |
 | `claude-sonnet-5` / `claude-sonnet-4-6` | `claude-sonnet-5` / `claude-sonnet-4.6` | 1M | ✓ | ✓ |
 | `claude-sonnet-4-5` / `claude-sonnet-4` | `claude-sonnet-4.5` / `claude-sonnet-4` | 200K | ✓ | ✓ |
 | `claude-haiku-4-5` | `claude-haiku-4.5` | 200K | ✗ | ✓ |
 | `claude-fable-5` | `claude-fable-5` | 1M | ✓ | ✓ |
+| `gpt-5-6-sol` / `gpt-5-6-terra` / `gpt-5-6-luna` | `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` | 1M | ✓ | ✗ |
 | `deepseek-3-2` | `deepseek-3.2` | 164K | ✓ | ✗ |
 | `minimax-m2-5` / `minimax-m2-1` | `minimax-m2.5` / `minimax-m2.1` | 196K | ✗ | ✗ |
 | `glm-5` | `glm-5` | 200K | ✓ | ✗ |
 | `qwen3-coder-next` | `qwen3-coder-next` | 256K | ✓ | ✗ |
 | `auto` | `auto` | 1M | ✓ | ✓ |
 
-带连字符和带点的两种写法都会解析到线上 id。经过认证的管理目录（按凭据、按区域）在发现运行后会覆盖容量
-和推理强度阶梯；`~/.kiro-management-models-cache.json` 的目录缓存与 pi-provider-kiro 共享。
+带连字符和带点的两种写法都会解析到线上 id。引导清单是发现之前的回退项，也决定精选菜单顺序；经过认证的
+管理目录（`List-Available-Models`，按凭据、按区域）会刷新已匹配条目的容量、推理强度阶梯和推理元数据，
+并追加引导清单尚未收录的模型。发现会直达 harness 模型选择器：读取模型列表时立即返回缓存内容，并在后台为
+下一次读取刷新缓存，因此管理端点缓慢或不可达都不会拖慢选择器或请求。显式配置的非空 `models` 列表会完全
+替代发现，并原样提供。
+
+`~/.kiro-management-models-cache.json` 的目录缓存与 pi-provider-kiro 共享：该工具写入格式版本 1，
+本提供方读取该布局，并写入版本 2。
 
 ## 开发
 
 ```bash
 pnpm install
 pnpm run build       # tsc -b：编译本包；依赖从已发布的 @deepseek-ai 包解析
-pnpm test            # vitest 套件（95 个测试）：端点、存储、刷新、模型、序列化、
+pnpm test            # vitest 套件（105 个测试）：端点、存储、刷新、模型、推理强度、序列化、
                      # 翻译、适配器传输、真实 Loader 组合
 ```
 
@@ -120,7 +129,8 @@ Kiro IDE 存储完全隔离。
 - **遗留的内联思考方言**：推理通过原生的 `thinkingText` 事件到达；在内容里发出 `<thinking>` 标签的模型会
   在可见文本块中保留它们。
 - **不发出回放状态**：跟进时历史会以提供方无关的内容重新发送。
-- 管理目录刷新是拉取式的（发现或缓存过期触发），不是后台预热。
+- 管理目录刷新是拉取式的，并非定时任务：读取模型列表时返回缓存或引导目录，并为下一次读取刷新缓存，
+  因此超过 TTL 后的首次读取可能比已认证目录落后一次启动。
 
 ## 许可证
 
