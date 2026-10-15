@@ -23,7 +23,7 @@
 | **模型** | 一份镜像 kiro-cli 已验证菜单的引导目录（21 个模型，含上下文窗口、输出上限、推理能力、图像模态），
   精确的线上 id 解析（带连字符的 harness id ⇄ 带点的线上 id），以及经过认证的管理目录：它会刷新所服务的元数据，
   并追加引导清单发布之后才上线的模型——不仅作用于 Models 页面，也直接作用于模型选择器。
-  推理强度把 harness 的 `off`/`low`/`high`/`max` 词汇映射到每个模型各自认证的 effort schema，
+  推理强度选择器提供 `off` 以及每个模型认证 effort schema 中的档位（如 `low`/`medium`/`high`/`xhigh`/`max`），
   并在系统提示上带上 Kiro 的思考标记。 |
 
 每个运行时请求都携带 harness 属性化的 `User-Agent`（来自 `@deepseek-ai/dsh-llm` 的
@@ -45,7 +45,7 @@ dsh plugin --profile <profile> add @joshryandavis/dsh-llm-kiro
   name: '@joshryandavis/dsh-llm-kiro'
   config:
     region: us-east-1        # 可选；省略时以凭据的区域为准
-    reasoningEffort: high    # 可选；off | low | high | max（默认 high）
+    reasoningEffort: high    # 可选；off | low | medium | high | xhigh | max（默认 high）
 ```
 
 对于已有的 kiro-cli 或 Kiro IDE 登录，这已经是全部配置：凭据被自动拾取、静默刷新并写回。静态 bearer token
@@ -69,7 +69,7 @@ dsh plugin --profile <profile> add @joshryandavis/dsh-llm-kiro
 | `profileArn` | 管理发现 | Profile ARN 覆盖。 |
 | `bearerTokenEnv` | — | 静态 bearer token 的凭据引用；绕过环境发现。 |
 | `thinking` | `enabled` | 部署锁；设为 `disabled` 会把每个请求都限制为 `off`。 |
-| `reasoningEffort` | `high` | 默认推理强度；`off` 禁用思考。 |
+| `reasoningEffort` | `high` | 默认推理强度；`off` 禁用思考。模型不支持的档位取最近的档位。 |
 | `maxTokens` | `8192` | 默认的每请求输出上限；按模型的上限和显式值优先。 |
 | `defaultContextWindow` | `200000` | 没有精确值时的上下文容量。 |
 | `models` | 引导目录 + 认证发现 | 显式模型列表；非空时原样提供并关闭发现。 |

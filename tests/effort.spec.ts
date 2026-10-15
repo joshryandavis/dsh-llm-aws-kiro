@@ -8,7 +8,10 @@ import {
   deriveKiroEffort,
   fallbackKiroEffort,
   getKiroEffortConfig,
+  kiroEffortLabel,
   mapDshEffortToKiro,
+  nearestKiroEffort,
+  selectableKiroEfforts,
 } from '../src/effort.ts'
 
 describe('llm-kiro effort', () => {
@@ -62,5 +65,28 @@ describe('llm-kiro effort', () => {
     })
     expect(buildKiroAdditionalModelRequestFields(undefined, 'high')).toBeUndefined()
     expect(buildKiroAdditionalModelRequestFields(extended, undefined)).toBeUndefined()
+  })
+
+  it('offers each model its own Kiro rungs, dropping the reasoning-disabling ones', () => {
+    expect(selectableKiroEfforts(fallbackKiroEffort('claude-opus-5.5'))).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(selectableKiroEfforts(fallbackKiroEffort('claude-sonnet-4.6'))).toEqual(['low', 'medium', 'high', 'max'])
+    expect(selectableKiroEfforts(fallbackKiroEffort('gpt-5.6-sol'))).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(selectableKiroEfforts(deriveKiroEffort({
+      properties: { reasoning: { properties: { effort: { enum: ['max', 'none', 'low'] } } } },
+    }))).toEqual(['low', 'max'])
+    expect(selectableKiroEfforts(undefined)).toEqual(['low', 'high', 'max'])
+    expect(kiroEffortLabel('xhigh')).toBe('Extra High')
+    expect(kiroEffortLabel('medium')).toBe('Medium')
+  })
+
+  it('rounds absent rungs up, then down', () => {
+    expect(nearestKiroEffort('xhigh', ['low', 'medium', 'high', 'max'])).toBe('max')
+    expect(nearestKiroEffort('medium', ['low', 'high', 'max'])).toBe('high')
+    expect(nearestKiroEffort('max', ['low', 'medium'])).toBe('medium')
+    expect(nearestKiroEffort('high', [])).toBeUndefined()
+    expect(mapDshEffortToKiro('xhigh', fallbackKiroEffort('claude-opus-4.6')!)).toBe('max')
+    expect(buildKiroAdditionalModelRequestFields(fallbackKiroEffort('gpt-5.6-sol'), 'xhigh')).toEqual({
+      reasoning: { effort: 'xhigh' },
+    })
   })
 })

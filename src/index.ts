@@ -35,6 +35,7 @@ import type { KiroStorePaths } from './kiro-cli.ts'
 import { fetchKiroModelCatalog } from './management.ts'
 import { bootstrapKiroModels, isCacheStale, servedKiroModels, toHarnessModelId, updateKiroModelsCache } from './models.ts'
 import type { KiroModel } from './models.ts'
+import type { KiroReasoningEffort } from './effort.ts'
 import type { KiroCredentials } from './types.ts'
 
 export {
@@ -93,8 +94,11 @@ export interface Config {
   bearerTokenEnv?: string
   /** Deployment thinking policy; 'disabled' limits every conversation request to off. */
   thinking?: 'enabled' | 'disabled'
-  /** Default thinking effort (default high); 'off' disables thinking per request. */
-  reasoningEffort?: 'off' | 'low' | 'high' | 'max'
+  /**
+   * Default thinking effort (default high); 'off' disables thinking. Other
+   * levels round to the nearest rung each model's Kiro ladder offers.
+   */
+  reasoningEffort?: KiroReasoningEffort
   /** Default per-request output cap (default 8,192); a model's own cap and explicit request values win. */
   maxTokens?: number
   /** Positive context capacity used when the selected model has no exact value (default 200,000). */
@@ -136,7 +140,7 @@ export const Config: z<Config> = z.object({
   profileArn: z.string(),
   bearerTokenEnv: z.string().role('credential-ref'),
   thinking: z.union(['enabled', 'disabled']),
-  reasoningEffort: z.union(['off', 'low', 'high', 'max']),
+  reasoningEffort: z.union(['off', 'low', 'medium', 'high', 'xhigh', 'max']),
   maxTokens: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_MAX_TOKENS),
   defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
   models: z.array(kiroModel),

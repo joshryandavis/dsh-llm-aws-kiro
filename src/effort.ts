@@ -2,9 +2,10 @@
  * Structured reasoning-effort handling for Kiro runtime requests. The
  * authenticated management catalog discloses each model's effort schema (the
  * `additionalModelRequestFields` enum); before discovery runs, known models
- * fall back to hardcoded ladders. The harness effort vocabulary is
- * `off`/`low`/`high`/`max`; the wire effort is whatever the model's schema
- * accepts.
+ * fall back to hardcoded ladders. The harness picker offers `off` plus the
+ * model's own wire rungs (e.g. `low`/`medium`/`high`/`xhigh`/`max`), so the
+ * selected id travels verbatim; reasoning models whose schema discloses no
+ * ladder offer the budget-only `low`/`high`/`max` vocabulary.
  * @module dsh-llm-kiro/effort
  */
 
@@ -20,16 +21,33 @@ export interface KiroEffortConfig {
   summarizedThinking: boolean
 }
 
-const GPT_EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh'] as const
+/** Every effort rung the Kiro runtime discloses, in ascending order. */
+export const KIRO_EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
+/** One harness-selectable effort level, or 'off'. */
+export type KiroReasoningEffort = 'off' | (typeof KIRO_EFFORT_ORDER)[number]
+/** Levels offered for reasoning models whose schema discloses no ladder (thinking budget only). */
+export const BUDGET_ONLY_EFFORTS = ['low', 'high', 'max'] as const
+
+const EFFORT_LABELS: Readonly<Record<string, string>> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra High',
+  max: 'Max',
+}
+/** Wire rungs that disable reasoning rather than select a level; the harness 'off' covers them. */
+const DISABLED_EFFORT_VALUES = new Set(['none'])
+
+const GPT_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const
 const CLAUDE_EXTENDED_EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const CLAUDE_MAX_EFFORT_VALUES = ['low', 'medium', 'high', 'max'] as const
-const EFFORT_ORDER = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 const CLAUDE_EXTENDED_EFFORT_MODELS = new Set([
   'claude-opus-5.5',
   'claude-opus-5',
   'claude-opus-4.8',
   'claude-opus-4.7',
+  'claude-sonnet-5.5',
   'claude-sonnet-5',
   'claude-fable-5',
 ])
@@ -107,30 +125,65 @@ export function getKiroEffortConfig(schema: unknown, kiroModelId: string): KiroE
 }
 
 /**
+ * Display label for one effort rung.
+ * @param effort - the wire effort value.
+ * @returns the selector label.
+ */
+export function kiroEffortLabel(effort: string): string {
+  return EFFORT_LABELS[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1)
+}
+
+/** Rank of one rung in {@link KIRO_EFFORT_ORDER}; unknown rungs sort last. */
+function effortRank(effort: string): number {
+  const index = KIRO_EFFORT_ORDER.indexOf(effort as (typeof KIRO_EFFORT_ORDER)[number])
+  return index < 0 ? KIRO_EFFORT_ORDER.length : index
+}
+
+/**
+ * The effort levels the harness picker offers for one model, ascending: the
+ * model's own wire rungs minus the reasoning-disabling ones ('off' covers
+ * those), or the budget-only ladder when the model discloses none.
+ * @param config - the model's effort config, when known.
+ * @returns the selectable levels, never empty.
+ */
+export function selectableKiroEfforts(config: KiroEffortConfig | undefined): readonly string[] {
+  const values = config?.values.filter(value => !DISABLED_EFFORT_VALUES.has(value)) ?? []
+  if (values.length === 0) return BUDGET_ONLY_EFFORTS
+  return [...values].sort((left, right) => effortRank(left) - effortRank(right))
+}
+
+/**
+ * The rung in `values` matching one effort, rounding up to the next available
+ * rung and then down when the exact level is absent.
+ * @param effort - the requested effort.
+ * @param values - the available rungs.
+ * @returns the chosen rung, or undefined when `values` is empty.
+ */
+export function nearestKiroEffort(effort: string, values: readonly string[]): string | undefined {
+  if (values.includes(effort)) return effort
+  const targetIndex = KIRO_EFFORT_ORDER.indexOf(effort as (typeof KIRO_EFFORT_ORDER)[number])
+  if (targetIndex >= 0) {
+    for (let index = targetIndex; index < KIRO_EFFORT_ORDER.length; index++) {
+      const candidate = KIRO_EFFORT_ORDER[index]
+      if (candidate !== undefined && values.includes(candidate)) return candidate
+    }
+    for (let index = targetIndex - 1; index >= 0; index--) {
+      const candidate = KIRO_EFFORT_ORDER[index]
+      if (candidate !== undefined && values.includes(candidate)) return candidate
+    }
+  }
+  return values[0]
+}
+
+/**
  * Map a harness effort level to a value present in the model's Kiro enum,
  * rounding to the nearest available rung when the exact level is absent.
- * @param effort - the harness effort ('low' | 'high' | 'max').
+ * @param effort - the harness effort (a non-off level).
  * @param config - the model's effort config.
  * @returns the wire effort value, or undefined when the model has no ladder.
  */
-export function mapDshEffortToKiro(effort: 'low' | 'high' | 'max', config: KiroEffortConfig): string | undefined {
-  if (config.values.length === 0) return undefined
-
-  const target = effort
-  if (config.values.includes(target)) return target
-
-  const targetIndex = EFFORT_ORDER.indexOf(target as (typeof EFFORT_ORDER)[number])
-  if (targetIndex >= 0) {
-    for (let index = targetIndex; index < EFFORT_ORDER.length; index++) {
-      const candidate = EFFORT_ORDER[index]
-      if (candidate !== undefined && config.values.includes(candidate)) return candidate
-    }
-    for (let index = targetIndex - 1; index >= 0; index--) {
-      const candidate = EFFORT_ORDER[index]
-      if (candidate !== undefined && config.values.includes(candidate)) return candidate
-    }
-  }
-  return config.values[0]
+export function mapDshEffortToKiro(effort: string, config: KiroEffortConfig): string | undefined {
+  return nearestKiroEffort(effort, config.values.filter(value => !DISABLED_EFFORT_VALUES.has(value)))
 }
 
 /**
@@ -141,7 +194,7 @@ export function mapDshEffortToKiro(effort: 'low' | 'high' | 'max', config: KiroE
  */
 export function buildKiroAdditionalModelRequestFields(
   config: KiroEffortConfig | undefined,
-  effort: 'low' | 'high' | 'max' | undefined,
+  effort: string | undefined,
 ): KiroAdditionalModelRequestFields | undefined {
   if (!effort || !config) return undefined
   const wireEffort = mapDshEffortToKiro(effort, config)

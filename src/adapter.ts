@@ -19,6 +19,7 @@ import type {
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
+  LlmModelReasoningInfo,
   ResolvedRetryPolicy,
   StreamChunk,
   ContentBlock,
@@ -27,7 +28,13 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import { getKiroEndpoints, resolveApiRegion } from './endpoints.ts'
-import { buildKiroAdditionalModelRequestFields } from './effort.ts'
+import {
+  buildKiroAdditionalModelRequestFields,
+  kiroEffortLabel,
+  nearestKiroEffort,
+  selectableKiroEfforts,
+  type KiroReasoningEffort,
+} from './effort.ts'
 import { kiroEffortFor, resolveKiroModelId, servedKiroModels } from './models.ts'
 import type { KiroModel } from './models.ts'
 import { resolveKiroProfileArn, KiroManagementHttpError } from './management.ts'
@@ -48,25 +55,19 @@ export const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 90_000
 
 const STREAM_IDLE_TIMEOUT_CODE = 'LLM_STREAM_IDLE_TIMEOUT'
 const OFF_REASONING_EFFORT = ReasoningEffortId('off')
-const LOW_REASONING_EFFORT = ReasoningEffortId('low')
-const HIGH_REASONING_EFFORT = ReasoningEffortId('high')
-const MAX_REASONING_EFFORT = ReasoningEffortId('max')
-const REASONING_EFFORTS = [
-  { id: OFF_REASONING_EFFORT, name: 'Off' },
-  { id: LOW_REASONING_EFFORT, name: 'Low' },
-  { id: HIGH_REASONING_EFFORT, name: 'High' },
-  { id: MAX_REASONING_EFFORT, name: 'Max' },
-] as const
 const OFF_ONLY_REASONING_EFFORTS = [
   { id: OFF_REASONING_EFFORT, name: 'Off' },
 ] as const
 
-/** Thinking budget (max_thinking_length marker) per harness effort level. */
-const THINKING_BUDGET: Record<'low' | 'high' | 'max', number> = {
+/** Thinking budget (max_thinking_length marker) per effort level; unknown levels use the high budget. */
+const THINKING_BUDGET: Readonly<Record<string, number>> = {
   low: 10_000,
+  medium: 20_000,
   high: 30_000,
+  xhigh: 40_000,
   max: 50_000,
 }
+const DEFAULT_THINKING_BUDGET = 30_000
 
 /** Validated connection facts for one operation; produced by the plugin's resolve step. */
 export interface KiroConnectionOptions {
@@ -96,8 +97,8 @@ export interface KiroConnectionOptions {
   maxTokens: number
   /** Deployment thinking policy; 'disabled' limits every conversation request to off. */
   thinking: 'enabled' | 'disabled'
-  /** Default reasoning effort; 'off' disables thinking per request. */
-  reasoningEffort: 'off' | 'low' | 'high' | 'max'
+  /** Default reasoning effort; 'off' disables thinking, other levels round to each model's ladder. */
+  reasoningEffort: KiroReasoningEffort
   /** Maximum provider idle time while one stream read is outstanding. */
   streamIdleTimeoutMs: number
   /** Maximum time to the first stream event. */
@@ -162,6 +163,27 @@ function modelInfo(provider: string, model: KiroModel): LlmModelInfo {
   }
 }
 
+/**
+ * The effort picker for one model: 'off' plus the model's own Kiro rungs, with
+ * the configured default rounded onto that ladder.
+ */
+function reasoningInfo(connection: KiroConnectionOptions, model: KiroModel | undefined): LlmModelReasoningInfo {
+  if (connection.thinking === 'disabled' || model?.reasoning !== true) {
+    return { efforts: OFF_ONLY_REASONING_EFFORTS, defaultEffort: OFF_REASONING_EFFORT }
+  }
+  const levels = selectableKiroEfforts(kiroEffortFor(model.kiroModelId, model.additionalModelRequestFieldsSchema))
+  const defaultLevel = connection.reasoningEffort === 'off'
+    ? undefined
+    : nearestKiroEffort(connection.reasoningEffort, levels)
+  return {
+    efforts: [
+      ...OFF_ONLY_REASONING_EFFORTS,
+      ...levels.map(level => ({ id: ReasoningEffortId(level), name: kiroEffortLabel(level) })),
+    ],
+    defaultEffort: defaultLevel === undefined ? OFF_REASONING_EFFORT : ReasoningEffortId(defaultLevel),
+  }
+}
+
 /** The model metadata for one exact model id: catalog entry or undefined. */
 function catalogEntry(models: readonly KiroModel[], model: string): KiroModel | undefined {
   return models.find(entry => entry.id === model)
@@ -200,23 +222,13 @@ export class KiroAdapter extends LlmAdapter {
     const connection = this.config.options()
     const configured = catalogEntry(servedKiroModels(connection), model)
     const contextWindow = configured?.contextWindow ?? connection.defaultContextWindow
-    const reasoningOff = connection.thinking === 'disabled'
-    const defaultEffort = reasoningOff || connection.reasoningEffort === 'off'
-      ? OFF_REASONING_EFFORT
-      : connection.reasoningEffort === 'low'
-        ? LOW_REASONING_EFFORT
-        : connection.reasoningEffort === 'max'
-          ? MAX_REASONING_EFFORT
-          : HIGH_REASONING_EFFORT
     return Promise.resolve({
       ...configured === undefined
         ? { provider, id: model, name: model, inputModalities: ['text' as const] }
         : modelInfo(provider, configured),
       context: { contextWindow },
       defaultMaxTokens: configured?.maxTokens ?? connection.maxTokens,
-      ...(reasoningOff || configured?.reasoning !== true
-        ? { reasoning: { efforts: OFF_ONLY_REASONING_EFFORTS, defaultEffort: OFF_REASONING_EFFORT } }
-        : { reasoning: { efforts: REASONING_EFFORTS, defaultEffort } }),
+      reasoning: reasoningInfo(connection, configured),
     })
   }
 
@@ -310,16 +322,14 @@ export class KiroAdapter extends LlmAdapter {
     const model = catalogEntry(servedKiroModels(connection), options.model)
     const contextWindow = model?.contextWindow ?? connection.defaultContextWindow
     const effortConfig = kiroEffortFor(wireModelId, model?.additionalModelRequestFieldsSchema)
-    const effectiveEffort = options.reasoningEffort === undefined
-      ? connection.reasoningEffort
-      : options.reasoningEffort as 'off' | 'low' | 'high' | 'max' | undefined
+    const effectiveEffort: string = options.reasoningEffort ?? connection.reasoningEffort
     const thinkingEnabled = effectiveEffort !== 'off'
       && connection.thinking !== 'disabled'
       && (model?.reasoning ?? true)
 
     let system = options.system ?? ''
     if (thinkingEnabled) {
-      const budget = THINKING_BUDGET[effectiveEffort as 'low' | 'high' | 'max'] ?? THINKING_BUDGET.high
+      const budget = THINKING_BUDGET[effectiveEffort] ?? DEFAULT_THINKING_BUDGET
       system = `<thinking_mode>enabled</thinking_mode><max_thinking_length>${budget}</max_thinking_length>${system ? `\n${system}` : ''}`
     }
 
@@ -343,7 +353,7 @@ export class KiroAdapter extends LlmAdapter {
     const body = serializeKiroRequest(options, wireModelId, system || undefined, contextWindow, encodedImages)
     const additionalModelRequestFields = buildKiroAdditionalModelRequestFields(
       effortConfig,
-      thinkingEnabled ? effectiveEffort as 'low' | 'high' | 'max' : undefined,
+      thinkingEnabled ? effectiveEffort : undefined,
     )
     if (additionalModelRequestFields) body.additionalModelRequestFields = additionalModelRequestFields
 

@@ -15,7 +15,7 @@ harness itself.
 | **Existing credentials** | Picks up an existing kiro-cli login (the `auth_kv` table of kiro-cli's SQLite store, IDC and social tokens) and the Kiro IDE token (`~/.aws/sso/cache/kiro-auth-token.json` with its OIDC client registration) — no second sign-in. An optional `bearerTokenEnv` reference bypasses ambient discovery for CI/bots. |
 | **Token refresh** | Silent refresh of expired tokens through the AWS SSO OIDC `/token` endpoint (Builder ID / IAM Identity Center) or the Kiro desktop auth service (Google/GitHub social), write-back into the kiro-cli store so both consumers stay in sync; a 403 mid-stream re-reads the shared store and falls back to `kiro-cli debug refresh-auth-token`; last-resort failure surfaces as `MISSING_CREDENTIAL`/AUTH with guidance. |
 | **The backend** | Region/endpoint resolution (SSO region → Kiro API region), the management control plane (`List-Available-Profiles`, `List-Available-Models`, shared `~/.kiro-management-models-cache.json` catalog cache), and the runtime `generateAssistantResponse` call over the AWS event-stream protocol (Smithy framing via `@smithy/core`), with capacity backoff, first-token timeout, and the harness idle watchdog. |
-| **Models** | A bootstrap catalog mirroring the kiro-cli-verified menu (21 models with context windows, output caps, reasoning capability, image modality), exact wire-id resolution (dashed harness ids ⇄ dotted wire ids), and the authenticated management catalog, which refreshes the served metadata and appends models that shipped after the bootstrap list — reaching the model picker, not just the Models page. Reasoning efforts map the harness `off`/`low`/`high`/`max` vocabulary onto each model's authenticated effort schema, with the Kiro thinking markers on the system prompt. |
+| **Models** | A bootstrap catalog mirroring the kiro-cli-verified menu (21 models with context windows, output caps, reasoning capability, image modality), exact wire-id resolution (dashed harness ids ⇄ dotted wire ids), and the authenticated management catalog, which refreshes the served metadata and appends models that shipped after the bootstrap list — reaching the model picker, not just the Models page. The reasoning-effort picker offers `off` plus each model's own Kiro effort rungs from its authenticated effort schema (e.g. `low`/`medium`/`high`/`xhigh`/`max`), with the Kiro thinking markers on the system prompt. |
 
 Every runtime request carries the harness attribution `User-Agent` (from `@deepseek-ai/dsh-llm`
 `attributionHeaders()`) plus the AWS SDK-shaped `x-amz-user-agent` telemetry header the backend expects.
@@ -38,7 +38,7 @@ Mount it in `cordis.yml`:
   name: '@joshryandavis/dsh-llm-kiro'
   config:
     region: us-east-1        # optional; the credential's region wins when omitted
-    reasoningEffort: high    # optional; off | low | high | max (default high)
+    reasoningEffort: high    # optional; off | low | medium | high | xhigh | max (default high)
 ```
 
 That is the whole configuration for an existing kiro-cli or Kiro IDE login: credentials are picked
@@ -63,7 +63,7 @@ edited at runtime — a change reaches the next request without a restart.
 | `profileArn` | management discovery | Profile ARN override. |
 | `bearerTokenEnv` | — | Credential reference for a static bearer token; bypasses ambient discovery. |
 | `thinking` | `enabled` | Deployment lock; `disabled` limits every request to `off`. |
-| `reasoningEffort` | `high` | Default effort; `off` disables thinking. |
+| `reasoningEffort` | `high` | Default effort; `off` disables thinking. Levels a model lacks round to its nearest rung. |
 | `maxTokens` | `8192` | Default per-request output cap; per-model caps and explicit values win. |
 | `defaultContextWindow` | `200000` | Context capacity for models without an exact value. |
 | `models` | bootstrap catalog + authenticated discovery | Explicit model list; a non-empty value is served verbatim and disables discovery. |

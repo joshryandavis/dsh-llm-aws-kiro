@@ -327,6 +327,33 @@ describe('llm-kiro adapter stream', () => {
     expect(inst.providerRetryPolicy('kiro')).toEqual({ mode: 'normal', maxRetries: 5 })
   })
 
+  it('offers the model ladder in the effort picker and rounds the default onto it', async () => {
+    const sonnet = await adapter().resolveModel('kiro', 'claude-sonnet-4-6')
+    expect(sonnet.reasoning).toEqual({
+      efforts: [
+        { id: 'off', name: 'Off' },
+        { id: 'low', name: 'Low' },
+        { id: 'medium', name: 'Medium' },
+        { id: 'high', name: 'High' },
+        { id: 'max', name: 'Max' },
+      ],
+      defaultEffort: 'high',
+    })
+    const glm = await adapter().resolveModel('kiro', 'glm-5')
+    expect(glm.reasoning?.efforts.map(effort => effort.id)).toEqual(['off', 'low', 'high', 'max'])
+    const xhighDefault = adapter({ options: () => connection({ reasoningEffort: 'xhigh' }) })
+    expect((await xhighDefault.resolveModel('kiro', 'claude-sonnet-4-6')).reasoning?.defaultEffort).toBe('max')
+  })
+
+  it('sends a picked rung verbatim when the model offers it', async () => {
+    const server = await serverWith([{ kind: 'eventstream', events: textEvents }])
+    await collect(adapter().stream(request({ reasoningEffort: 'medium' })))
+    const body = server.requests[0] as Record<string, unknown>
+    const current = (body.conversationState as Record<string, unknown>).currentMessage as Record<string, unknown>
+    expect((current.userInputMessage as Record<string, unknown>).content).toContain('<max_thinking_length>20000</max_thinking_length>')
+    expect(body.additionalModelRequestFields).toMatchObject({ output_config: { effort: 'medium' } })
+  })
+
   it('refreshes the served catalog from discovery and warms it when the list is read', async () => {
     const warmCatalog = vi.fn()
     const inst = adapter({
